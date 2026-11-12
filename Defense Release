@@ -37,8 +37,8 @@ c
 #include <linux/bpf.h>
 #include <linux/if_ether.h>
 #include <linux/ip.h>
-#include <linux/tcp.h>
 #include <linux/in.h>
+#include <linux/tcp.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
 
@@ -50,12 +50,12 @@ struct session_key {
     __u16 dport;
 };
 
-/* Таблица состояний для контроля базовых параметров протокола */
+/* LRU-таблица состояний: автоматически вытесняет старые сессии без переполнения */
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __type(key, struct session_key);
-    __type(value, __u32); /* Хранит эталонный TTL, зафиксированный при Handshake */
-    __uint(max_entries, 1024);
+    __type(value, __u32); /* Хранит эталонный TTL клиента, зафиксированный при SYN */
+    __uint(max_entries, 65536);
 } protected_sessions SEC(".maps");
 
 SEC("xdp")
@@ -68,7 +68,6 @@ int monolith_firewall_ingress(struct xdp_md *ctx) {
     if ((void *)(eth + 1) > data_end)
         return XDP_PASS;
 
-    /* Фильтруем только IPv4 трафик */
     if (eth->h_proto != bpf_htons(ETH_P_IP))
         return XDP_PASS;
 
@@ -77,17 +76,14 @@ int monolith_firewall_ingress(struct xdp_md *ctx) {
     if ((void *)(iph + 1) > data_end)
         return XDP_PASS;
 
-    /* Проверяем, что инкапсулирован протокол TCP */
-    if (iph->protocol != IPPROTO_TCP)
+    if (iph->ihl < 5 || iph->protocol != IPPROTO_TCP)
         return XDP_PASS;
 
-    /* 3. ПАРСИНГ УРОВНЯ L4 (TCP) */
-    /* Вычисляем начало заголовка TCP на основе Internet Header Length (IHL) */
-    struct tcphdr *tcph = (void *)((__u32 *)iph + iph->ihl);
+    /* 3. ПАРСИНГ УРОВНЯ L4 (TCP) с учётом переменной длины IP-заголовка */
+    struct tcphdr *tcph = (void *)iph + (iph->ihl * 4);
     if ((void *)(tcph + 1) > data_end)
         return XDP_PASS;
 
-    /* Формируем уникальный сессионный ключ (двунаправленный учет) */
     struct session_key key = {
         .saddr = iph->saddr,
         .daddr = iph->daddr,
@@ -95,9 +91,14 @@ int monolith_firewall_ingress(struct xdp_md *ctx) {
         .dport = tcph->dest
     };
 
-    /* ФАЗА 1: ОБУЧЕНИЕ И ЕГОР СТАНДАРТИЗАЦИЯ (Baseline TTL Acquisition) */
-    /* Перехватываем SYN-ACK сегмент на этапе установления сессии */
-    if (tcph->syn && tcph->ack) {
+    /* Очистка записи при закрытии соединения (FIN или RST) */
+    if (tcph->fin || tcph->rst) {
+        bpf_map_delete_elem(&protected_sessions, &key);
+        return XDP_PASS;
+    }
+
+    /* ФАЗА 1: ОБУЧЕНИЕ И ЭТАЛОННАЯ СТАНДАРТИЗАЦИЯ (Baseline TTL на входящем SYN) */
+    if (tcph->syn && !tcph->ack) {
         __u32 base_ttl = iph->ttl;
         bpf_map_update_elem(&protected_sessions, &key, &base_ttl, BPF_ANY);
         return XDP_PASS;
@@ -106,19 +107,15 @@ int monolith_firewall_ingress(struct xdp_md *ctx) {
     /* АНАЛИЗ АКТИВНЫХ УСТАНОВЛЕННЫХ СОЕДИНЕНИЙ */
     __u32 *expected_ttl = bpf_map_lookup_elem(&protected_sessions, &key);
     if (expected_ttl) {
-        
         /* ЗАЩИТА ОТ ФАЗЫ 2: Детекция и жесткий сброс аномальных скачков TTL */
         if (iph->ttl != *expected_ttl) {
-            return XDP_DROP; /* Сброс кадра на уровне сетевой карты */
+            return XDP_DROP;
         }
 
-        /* ЗАЩИТА ОТ ФАЗЫ 3: Обнаружение Null-пакетов (сброшенных флагов TCP) */
-        /* Безопасное чтение байта флагов (13-й байт от начала заголовка TCP) */
-        __u8 *flags = (__u8 *)tcph + 13;
-        if ((void *)(flags + 1) <= data_end) {
-            if (*flags == 0x00) {
-                return XDP_DROP; /* Блокировка инжекции в Fast-Path conntrack */
-            }
+        /* ЗАЩИТА ОТ ФАЗЫ 3: Обнаружение Null-пакетов (0x00) и Xmas-аномалий */
+        __u8 flags = *((__u8 *)tcph + 13);
+        if (flags == 0x00) {
+            return XDP_DROP;
         }
     }
 
@@ -126,7 +123,6 @@ int monolith_firewall_ingress(struct xdp_md *ctx) {
 }
 
 char _license[] SEC("license") = "GPL";
-Используйте код с осторожностью.
 
 3. Инструкция по сборке и развертыванию для инженеров
 
