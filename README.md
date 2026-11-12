@@ -1,3 +1,3 @@
 # 🛡 WHITE MANIFESTO: Stateful Inline Bypass & Defensive Architecture
 
-Теоретический манифест архитектуры «Монолит» и трехфазного байпаса, посвященный моделированию аномалий уровней L3/L4/L7 для модернизации систем DPI и WAF. Полную версию документации со всеми схемами, таблицами и инструкциями по сборке eBPF/XDP-модуля вы можете найти в официальном репозитории [stateful-inline-bypass-manifesto](https://github.com/zerokull1/stateful-inline-bypass-manifesto).
+Теоретический манифест архитектуры «Монолит» и трехфазного байпаса, описывающий модель аномалий уровней L3/L4/L7 и симметричную архитектуру активной защиты. Подробную документацию, ASCII-схемы, таблицы спецификаций и White Hat Policy вы можете найти в файле репозитория [README.md](https://github.com/zerokull1/stateful-inline-bypass-manifesto.git).
