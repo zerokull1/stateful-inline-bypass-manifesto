@@ -129,7 +129,7 @@ char _license[] SEC("license") = "GPL";
 Для компиляции данного eBPF-модуля и его последующей посадки на сетевой интерфейс, используйте стандартный тулчейн clang и iproute2.
 bash
 # 1. Компиляция исходного кода в объектный файл ELF, понятный верификатору ядра
-clang -O2 -g -target bpf -c monolith_firewall.c -o monolith_firewall.o
+clang -O2 -g -target bpf -D__TARGET_ARCH_x86 -c monolith_firewall.c -o monolith_firewall.o
 
 # 2. Интеграция скомпилированного XDP-модуля на сетевой интерфейс (например, eth0)
 # Режим 'xdpgeneric' используется для совместимости, для продакшна рекомендуется 'xdp' (native)
